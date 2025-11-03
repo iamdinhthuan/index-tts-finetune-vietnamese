@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Utility script to train a SentencePiece BPE tokenizer on the Japanese corpus.
+Utility script to train a SentencePiece BPE tokenizer on a Vietnamese text corpus.
 
 Example:
     python tools/tokenizer/train_bpe.py \\
-        --manifest JA_yodas_dataset/ja_yodas_train.jsonl \\
-        --output-prefix checkpoints/japanese_bpe \\
+        --manifest manifests/vi_raw.jsonl \\
+        --output-prefix checkpoints/vietnamese_bpe \\
         --vocab-size 12000
 """
 
@@ -22,7 +22,7 @@ from indextts.utils.front import TextNormalizer
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a Japanese BPE tokenizer with SentencePiece.")
+    parser = argparse.ArgumentParser(description="Train a Vietnamese BPE tokenizer with SentencePiece.")
     parser.add_argument(
         "--manifest",
         nargs="+",
@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-prefix",
         type=Path,
-        default=Path("checkpoints/japanese_bpe"),
+        default=Path("checkpoints/vietnamese_bpe"),
         help="Output prefix for the tokenizer files (.model/.vocab).",
     )
     parser.add_argument(
@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
         "--character-coverage",
         type=float,
         default=0.9995,
-        help="Character coverage for SentencePiece (keep near 1.0 for Japanese).",
+        help="Character coverage for SentencePiece (keep near 1.0 for large character sets).",
     )
     parser.add_argument(
         "--model-type",
@@ -64,11 +64,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable byte fallback to avoid <unk> for unseen characters.",
     )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="vi",
+        help="Language hint passed to the normalizer/tokenizer (default: vi).",
+    )
     return parser.parse_args()
 
 
-def iter_texts(manifests: list[Path]) -> tuple[int, int, Path]:
-    normalizer = TextNormalizer(preferred_language="ja")
+def iter_texts(manifests: list[Path], language: str) -> tuple[int, int, Path]:
+    normalizer = TextNormalizer(preferred_language=language)
     normalizer.load()
 
     num_samples = 0
@@ -83,7 +89,7 @@ def iter_texts(manifests: list[Path]) -> tuple[int, int, Path]:
                             continue
                         payload = json.loads(line)
                         text = payload.get("text", "")
-                        text = normalizer.normalize(text, language="ja")
+                        text = normalizer.normalize(text, language=language)
                         if not text:
                             num_empty += 1
                             continue
@@ -104,7 +110,7 @@ def train_tokenizer(args: argparse.Namespace) -> None:
     output_prefix = args.output_prefix.expanduser().resolve()
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
 
-    num_samples, num_empty, corpus_path = iter_texts(manifests)
+    num_samples, num_empty, corpus_path = iter_texts(manifests, args.language)
     if num_samples == 0:
         raise RuntimeError("No non-empty samples found. Cannot train tokenizer.")
 

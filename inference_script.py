@@ -5,12 +5,12 @@ Convenience script for running IndexTTS2 inference from the command line.
 
 Examples
 --------
-Generate Japanese audio with the latest fine-tuned checkpoint:
+Generate Vietnamese audio with the latest fine-tuned checkpoint:
 
     uv run python inference_script.py \
-        --config checkpoints/config_finetune.yaml \
-        --speaker vivy.wav \
-        --text '任務なんてクソくらえ！任務なんてクソくらえよ、ルネ！' \
+        --config checkpoints/config_vi.yaml \
+        --speaker prompt.wav \
+        --text 'Xin chào mọi người, đây là bản demo.' \
         --output out.wav \
         --device cuda:0
 
