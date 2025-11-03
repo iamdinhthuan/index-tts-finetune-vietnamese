@@ -37,7 +37,6 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from transformers import get_cosine_schedule_with_warmup
-from tqdm.auto import tqdm
 
 from indextts.gpt.model_v2 import UnifiedVoice
 from indextts.utils.front import TextNormalizer, TextTokenizer
@@ -63,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-interval", type=int, default=100, help="Steps between training log entries.")
     parser.add_argument("--val-interval", type=int, default=0,
                         help="Validation frequency in steps (0 = once per epoch).")
-    parser.add_argument("--num-workers", type=int, default=8, help="DataLoader workers.")
+    parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers.")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient norm clipping value.")
     parser.add_argument("--text-loss-weight", type=float, default=0.2, help="Weight for text CE loss.")
     parser.add_argument("--mel-loss-weight", type=float, default=0.8, help="Weight for semantic CE loss.")
@@ -526,26 +525,24 @@ def main() -> None:
 
     for epoch in range(start_epoch, args.epochs):
         if epoch == start_epoch and global_step > 0:
-            completed_steps_in_epoch = global_step % steps_per_epoch
-            batches_to_skip = completed_steps_in_epoch * args.grad_accumulation
+            completed_steps = global_step % steps_per_epoch
+            batches_to_skip = completed_steps * args.grad_accumulation
         else:
+            completed_steps = 0
             batches_to_skip = 0
 
-        data_iter = iter(train_loader)
-        # Skip batches already processed in the resumed epoch.
+        batch_iter = iter(train_loader)
         for _ in range(batches_to_skip):
-            next(data_iter, None)
+            next(batch_iter, None)
 
-        epoch_iterator = tqdm(
-            enumerate(data_iter, start=batches_to_skip),
-            total=len(train_loader),
-            initial=batches_to_skip,
+        progress_bar = tqdm(
+            total=steps_per_epoch,
+            initial=completed_steps,
             desc=f"Epoch {epoch + 1}/{args.epochs}",
             dynamic_ncols=True,
         )
 
-        for batch_idx, batch in epoch_iterator:
-            effective_batch_idx = batch_idx - batches_to_skip
+        for batch_idx, batch in enumerate(batch_iter, start=batches_to_skip):
             with torch.cuda.amp.autocast(enabled=use_amp):
                 text_loss, mel_loss, metrics = compute_losses(model, batch, device)
                 loss = args.text_loss_weight * text_loss + args.mel_loss_weight * mel_loss
@@ -554,7 +551,7 @@ def main() -> None:
             else:
                 (loss / args.grad_accumulation).backward()
 
-            if (effective_batch_idx + 1) % args.grad_accumulation == 0:
+            if (batch_idx + 1) % args.grad_accumulation == 0:
                 if args.grad_clip > 0:
                     if use_amp:
                         scaler.unscale_(optimizer)
@@ -568,13 +565,15 @@ def main() -> None:
                 optimizer.zero_grad(set_to_none=True)
 
                 global_step += 1
+                completed_steps += 1
+                progress_bar.update(1)
 
                 if global_step % args.log_interval == 0:
                     writer.add_scalar("train/text_loss", text_loss.item(), global_step)
                     writer.add_scalar("train/mel_loss", mel_loss.item(), global_step)
                     writer.add_scalar("train/mel_top1", metrics["mel_top1"], global_step)
                     writer.add_scalar("train/lr", scheduler.get_last_lr()[0], global_step)
-                    epoch_iterator.write(
+                    tqdm.write(
                         "[Train] "
                         f"epoch={epoch + 1} step={global_step} "
                         f"text_loss={text_loss.item():.4f} "
@@ -582,7 +581,7 @@ def main() -> None:
                         f"mel_top1={metrics['mel_top1']:.4f} "
                         f"lr={scheduler.get_last_lr()[0]:.2e}"
                     )
-                    epoch_iterator.set_postfix(
+                    progress_bar.set_postfix(
                         {
                             "loss": loss.item(),
                             "text": f"{text_loss.item():.4f}",
@@ -593,18 +592,11 @@ def main() -> None:
                     )
 
                 if args.val_interval > 0 and global_step % args.val_interval == 0:
-                    epoch_iterator.write(
-                        "[Val] "
-                        f"epoch={epoch + 1} step={global_step} "
-                        f"text_loss={val_metrics['text_loss']:.4f} "
-                        f"mel_loss={val_metrics['mel_loss']:.4f} "
-                        f"mel_top1={val_metrics['mel_top1']:.4f}"
-                    )
                     val_metrics = evaluate(model, val_loader, device)
                     writer.add_scalar("val/text_loss", val_metrics["text_loss"], global_step)
                     writer.add_scalar("val/mel_loss", val_metrics["mel_loss"], global_step)
                     writer.add_scalar("val/mel_top1", val_metrics["mel_top1"], global_step)
-                    epoch_iterator.write(
+                    tqdm.write(
                         "[Val] "
                         f"epoch={epoch + 1} step={global_step} "
                         f"text_loss={val_metrics['text_loss']:.4f} "
@@ -651,8 +643,15 @@ def main() -> None:
                 if args.max_steps and global_step >= args.max_steps:
                     break
 
+                if completed_steps >= steps_per_epoch:
+                    break
+
             if args.max_steps and global_step >= args.max_steps:
                 break
+            if completed_steps >= steps_per_epoch:
+                break
+
+        progress_bar.close()
 
         if args.max_steps and global_step >= args.max_steps:
             break
@@ -662,11 +661,9 @@ def main() -> None:
             writer.add_scalar("val/text_loss", val_metrics["text_loss"], global_step)
             writer.add_scalar("val/mel_loss", val_metrics["mel_loss"], global_step)
             writer.add_scalar("val/mel_top1", val_metrics["mel_top1"], global_step)
-            tqdm.write(
-                "[Val] "
-                f"epoch={epoch + 1} step={global_step} "
-                f"text_loss={val_metrics['text_loss']:.4f} "
-                f"mel_loss={val_metrics['mel_loss']:.4f} "
+            print(
+                f"[Val] epoch={epoch + 1} step={global_step} "
+                f"text_loss={val_metrics['text_loss']:.4f} mel_loss={val_metrics['mel_loss']:.4f} "
                 f"mel_top1={val_metrics['mel_top1']:.4f}"
             )
             if val_metrics["mel_loss"] < best_val:
